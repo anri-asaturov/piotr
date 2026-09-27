@@ -281,7 +281,7 @@ function frameUniforms(w, h) {
     uMode: S.mode === 'naive' ? 1 : 0,
     uView: VIEWS[S.view] ?? 0,
     uMaxSteps: S.steps,
-    uShadowSteps: S.shadows ? 48 : 0,
+    uShadowSteps: S.shadows ? (coarse ? 32 : 48) : 0,
     uAO: S.ao ? 1 : 0,
     uPlateOn: plate ? 1 : 0,
     uPlate: [hx, hy, BASE_Z, PLATE_THICK],

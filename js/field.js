@@ -61,9 +61,13 @@ export class Field {
     this.cells = new Float32Array(n * 4);
     this.top = new Float32Array(n);
     this.bot = new Float32Array(n);
-    this.winTop = new Float32Array(n);
-    this.winBot = new Float32Array(n);
     this.tmp = new Float32Array(n);
+    this.sinR = new Float32Array(n);
+    this.cosR = new Float32Array(n);
+    this.sinP = new Float32Array(n);
+    this.cosP = new Float32Array(n);
+    this.rp = new Float64Array(36);
+    this.waveK = NaN;
     this.push = new Float32Array(n);
     this.rnd = new Float32Array(n);
     this.rnd2 = new Float32Array(n);
@@ -78,6 +82,8 @@ export class Field {
         this.rnd[c] = hash(i, j, 1);
         this.rnd2[c] = hash(i, j, 2);
         this.radial[c] = Math.hypot(i - cx, j - cy);
+        this.sinP[c] = Math.sin(this.rnd[c] * TAU);
+        this.cosP[c] = Math.cos(this.rnd[c] * TAU);
       }
     }
     this.pushActive = false;
@@ -187,7 +193,7 @@ export class Field {
 
   /** Recomputes all cell data for settings s at animation time t (seconds). */
   update(s, t) {
-    const { W, H, n, level, alpha, rnd, rnd2, radial, push, cells, top, bot, ripples } = this;
+    const { W, H, level, alpha, rnd2, push, cells, top, bot } = this;
     this.ensureLevels(s);
     const S = this.size;
     const shape = SHAPES[s.shape] || SHAPES.sphere;
@@ -200,12 +206,33 @@ export class Field {
     const size = s.size * rMax;
     const sbl = s.sizeByLum;
     const scat = s.scatter * SCATTER_SCALE * S;
-    const waveA = s.wave * WAVE_SCALE * S;
-    const waveK = TAU / (Math.max(0.03, s.waveLen) * S);
-    const waveW = s.waveSpeed * 2.5;
-    const floatA = s.float * FLOAT_SCALE * S;
     const pushOn = this.pushActive;
-    const nr = ripples.length;
+
+    // Wave and float use cached per-cell sin/cos, so a frame costs two
+    // multiply-adds per cell instead of a Math.sin:
+    // sin(a - b) = sin a cos b - cos a sin b, sin(b + p) = sin b cos p + cos b sin p.
+    const waveA = s.wave * WAVE_SCALE * S;
+    if (waveA !== 0) this.ensureWave(TAU / (Math.max(0.03, s.waveLen) * S));
+    const sw = Math.sin(t * s.waveSpeed * 2.5), cw = Math.cos(t * s.waveSpeed * 2.5);
+    const floatA = s.float * FLOAT_SCALE * S;
+    const sf = Math.sin(t * 1.3), cf = Math.cos(t * 1.3);
+    const { sinR, cosR, sinP, cosP } = this;
+
+    // Ripples: only cells inside each ring band pay for a sqrt + table lookup.
+    const RP = this.rp;
+    const nr = Math.min(this.ripples.length, 6);
+    for (let k = 0; k < nr; k++) {
+      const q = this.ripples[k];
+      const bw = RIPPLE_BAND / q.invW;
+      const inner = Math.max(0, q.front - bw);
+      RP[k * 6] = q.x;
+      RP[k * 6 + 1] = q.y;
+      RP[k * 6 + 2] = inner * inner;
+      RP[k * 6 + 3] = (q.front + bw) * (q.front + bw);
+      RP[k * 6 + 4] = q.front;
+      RP[k * 6 + 5] = q.invW;
+    }
+    const amps = this.ripples.map((q) => q.amp);
 
     let zMin = Infinity, zMax = -Infinity;
     for (let j = 0, c = 0; j < H; j++) {
@@ -218,14 +245,13 @@ export class Field {
         }
         let z = depth * lv;
         if (scat !== 0) z += scat * rnd2[c] * rnd2[c];
-        if (waveA !== 0) z += waveA * (0.5 + 0.5 * Math.sin(radial[c] * waveK - t * waveW));
-        if (floatA !== 0) z += floatA * (0.5 + 0.5 * Math.sin(t * 1.3 + rnd[c] * TAU));
+        if (waveA !== 0) z += waveA * (0.5 + 0.5 * (sinR[c] * cw - cosR[c] * sw));
+        if (floatA !== 0) z += floatA * (0.5 + 0.5 * (sf * cosP[c] + cf * sinP[c]));
         if (pushOn) z += push[c];
-        for (let k = 0; k < nr; k++) {
-          const q = ripples[k];
-          const dx = i - q.x, dy = j - q.y;
-          const u = (Math.sqrt(dx * dx + dy * dy) - q.front) * q.invW;
-          if (u > -3 && u < 3) z += q.amp * Math.exp(-u * u) * Math.cos(u * 2.2);
+        for (let k = 0, o = 0; k < nr; k++, o += 6) {
+          const dx = i - RP[o], dy = j - RP[o + 1];
+          const d2 = dx * dx + dy * dy;
+          if (d2 > RP[o + 2] && d2 < RP[o + 3]) z += amps[k] * ripple((Math.sqrt(d2) - RP[o + 4]) * RP[o + 5]);
         }
         if (z < 0) z = 0;
 
@@ -246,30 +272,54 @@ export class Field {
       }
     }
 
-    windowFilter(top, this.winTop, W, H, true, this);
-    windowFilter(bot, this.winBot, W, H, false, this);
-    const wt = this.winTop, wb = this.winBot;
-    for (let c = 0, o = 2; c < n; c++, o += 4) {
-      cells[o] = wt[c];
-      cells[o + 1] = wb[c];
-    }
+    // Window extrema go straight into channels z / w of the cell texture.
+    windowFilter(top, W, H, true, this, cells, 2);
+    windowFilter(bot, W, H, false, this, cells, 3);
 
     if (zMax < zMin) zMin = zMax = 0;
     this.zMin = zMin;
     this.zMax = zMax;
   }
+
+  ensureWave(k) {
+    if (k === this.waveK) return;
+    this.waveK = k;
+    const { radial, sinR, cosR, n } = this;
+    for (let c = 0; c < n; c++) {
+      const a = radial[c] * k;
+      sinR[c] = Math.sin(a);
+      cosR[c] = Math.cos(a);
+    }
+  }
 }
 
-// Separable (2R+1)² max / min filter.
-function windowFilter(src, dst, W, H, isMax, f) {
+// Ripple profile exp(-u²)·cos(2.2u) over |u| < RIPPLE_BAND, tabulated once.
+const RIPPLE_BAND = 2.6;
+const LUT_N = 512;
+const LUT = new Float32Array(LUT_N + 2);
+for (let k = 0; k <= LUT_N + 1; k++) {
+  const u = (k / LUT_N) * 2 * RIPPLE_BAND - RIPPLE_BAND;
+  LUT[k] = Math.exp(-u * u) * Math.cos(2.2 * u);
+}
+function ripple(u) {
+  const x = ((u + RIPPLE_BAND) / (2 * RIPPLE_BAND)) * LUT_N;
+  if (!(x >= 0 && x < LUT_N)) return 0;
+  const k = x | 0;
+  return LUT[k] + (LUT[k + 1] - LUT[k]) * (x - k);
+}
+
+// Separable (2R+1)² max / min filter of src (W×H) into every 4th float of dst,
+// starting at channel `off` (the interleaved cell texture).
+function windowFilter(src, W, H, isMax, f, dst, off) {
   const R = f.R;
-  for (let j = 0; j < H; j++) line(src, j * W, 1, W, f.tmp, j * W, 1, R, isMax, f.P, f.G, f.Q);
-  for (let i = 0; i < W; i++) line(f.tmp, i, W, H, dst, i, W, R, isMax, f.P, f.G, f.Q);
+  for (let j = 0; j < H; j++) line(src, j * W, 1, W, f.tmp, j * W, 1, R, isMax, f);
+  for (let i = 0; i < W; i++) line(f.tmp, i, W, H, dst, i * 4 + off, W * 4, R, isMax, f);
 }
 
-// Sliding-window max/min over one strided line, O(1) per element
-// (van Herk / Gil–Werman: block prefix + suffix extrema).
-function line(src, s0, ss, n, dst, d0, ds, R, isMax, P, G, Q) {
+// Sliding-window max/min over one strided line in O(1) per element
+// (van Herk / Gil-Werman: per-block prefix and suffix extrema).
+function line(src, s0, ss, n, dst, d0, ds, R, isMax, f) {
+  const { P, G, Q } = f;
   const w = 2 * R + 1;
   const m = n + 2 * R;
   const pad = isMax ? EMPTY_TOP : EMPTY_BOT;
@@ -277,32 +327,50 @@ function line(src, s0, ss, n, dst, d0, ds, R, isMax, P, G, Q) {
     P[k] = pad;
     P[m - 1 - k] = pad;
   }
-  for (let x = 0; x < n; x++) P[x + R] = src[s0 + x * ss];
+  for (let x = 0, q = s0; x < n; x++, q += ss) P[x + R] = src[q];
   if (isMax) {
-    for (let k = 0; k < m; k++) {
-      const v = P[k];
-      G[k] = k % w === 0 || G[k - 1] < v ? v : G[k - 1];
+    for (let b = 0; b < m; b += w) {
+      const e = b + w < m ? b + w : m;
+      let a = P[b];
+      G[b] = a;
+      for (let k = b + 1; k < e; k++) {
+        const v = P[k];
+        if (v > a) a = v;
+        G[k] = a;
+      }
+      a = P[e - 1];
+      Q[e - 1] = a;
+      for (let k = e - 2; k >= b; k--) {
+        const v = P[k];
+        if (v > a) a = v;
+        Q[k] = a;
+      }
     }
-    for (let k = m - 1; k >= 0; k--) {
-      const v = P[k];
-      Q[k] = (k + 1) % w === 0 || k === m - 1 || Q[k + 1] < v ? v : Q[k + 1];
-    }
-    for (let x = 0; x < n; x++) {
+    for (let x = 0, d = d0; x < n; x++, d += ds) {
       const a = Q[x], b = G[x + 2 * R];
-      dst[d0 + x * ds] = a > b ? a : b;
+      dst[d] = a > b ? a : b;
     }
   } else {
-    for (let k = 0; k < m; k++) {
-      const v = P[k];
-      G[k] = k % w === 0 || G[k - 1] > v ? v : G[k - 1];
+    for (let b = 0; b < m; b += w) {
+      const e = b + w < m ? b + w : m;
+      let a = P[b];
+      G[b] = a;
+      for (let k = b + 1; k < e; k++) {
+        const v = P[k];
+        if (v < a) a = v;
+        G[k] = a;
+      }
+      a = P[e - 1];
+      Q[e - 1] = a;
+      for (let k = e - 2; k >= b; k--) {
+        const v = P[k];
+        if (v < a) a = v;
+        Q[k] = a;
+      }
     }
-    for (let k = m - 1; k >= 0; k--) {
-      const v = P[k];
-      Q[k] = (k + 1) % w === 0 || k === m - 1 || Q[k + 1] > v ? v : Q[k + 1];
-    }
-    for (let x = 0; x < n; x++) {
+    for (let x = 0, d = d0; x < n; x++, d += ds) {
       const a = Q[x], b = G[x + 2 * R];
-      dst[d0 + x * ds] = a < b ? a : b;
+      dst[d] = a < b ? a : b;
     }
   }
 }
