@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#05060a">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Real-time ray-marched image field: every pixel becomes a 3D shape, rendered with neighbour-aware domain repetition in a single WebGL 2 fragment shader.">
+  <title>Tessera · ray-marched image field</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2305060a'/%3E%3Cg fill='%23ff9e5e'%3E%3Ccircle cx='9' cy='9' r='3.2'/%3E%3Ccircle cx='16' cy='9' r='2.2'/%3E%3Ccircle cx='23' cy='9' r='3.2'/%3E%3Ccircle cx='9' cy='16' r='2.2'/%3E%3Ccircle cx='23' cy='16' r='2.2'/%3E%3Ccircle cx='9' cy='23' r='3.2'/%3E%3Ccircle cx='16' cy='23' r='2.2'/%3E%3Ccircle cx='23' cy='23' r='3.2'/%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='4' fill='%23ff5f8f'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <canvas id="view" aria-label="3D view: the image as a field of ray-marched shapes"></canvas>
+
+  <header class="hud">
+    <div class="brand glass"><span class="logo" aria-hidden="true"></span><span class="name">Tessera</span></div>
+    <div class="chip glass" aria-live="off"><span id="fps">…</span><span class="sep" aria-hidden="true"></span><span id="res"></span></div>
+  </header>
+
+  <nav id="toolbar" class="toolbar glass" aria-label="Tools"></nav>
+  <aside id="panel" class="panel glass" aria-label="Settings"></aside>
+
+  <div id="hint" class="hint glass" role="status"></div>
+  <div id="toast" class="toast glass" role="status" aria-live="polite"></div>
+  <div id="drop" class="drop"><div>Drop an image</div></div>
+
+  <div id="overlay" class="overlay">
+    <div class="card">
+      <div class="spinner" aria-hidden="true"></div>
+      <h1 class="title">Compiling shaders…</h1>
+      <p class="detail"></p>
+    </div>
+  </div>
+
+  <input id="file" type="file" accept="image/*" hidden>
+  <noscript>
+    <div class="overlay error"><div class="card"><h1 class="title">JavaScript is required</h1></div></div>
+  </noscript>
+</body>
+</html>
